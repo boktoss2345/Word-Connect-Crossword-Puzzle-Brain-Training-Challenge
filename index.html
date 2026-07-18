@@ -971,31 +971,9 @@
     const promoImage = document.getElementById('promoImage');
     const promoButton = document.getElementById('promoButton');
     
-    // Safer implementation for Android WebView
-    // Using intent:// for Android, with fallback to market:// and https://
-    const PROMO_LINK = 'intent://apps/android?initiatePurchaseFlow=true&asin=B0H7SBR4MW#Intent;scheme=amzn;package=com.amazon.venezia;end';
-    const PROMO_FALLBACK = 'https://www.amazon.com/dp/B0H7SBR4MW';
-
     function openPromoLink() {
-      // Try Amazon Appstore scheme first
-      try {
-        const link = document.createElement('a');
-        link.href = 'amzn://apps/android?initiatePurchaseFlow=true&asin=B0H7SBR4MW';
-        link.style.display = 'none';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        
-        // Fallback timeout: if Amazon app doesn't open, redirect to web
-        setTimeout(() => {
-          if (!document.hidden) {
-            window.open(PROMO_FALLBACK, '_blank');
-          }
-        }, 1500);
-      } catch (e) {
-        // If all else fails, open in browser
-        window.open(PROMO_FALLBACK, '_blank');
-      }
+      // Only open Amazon Appstore - no fallback to website
+      window.location.href = 'amzn://apps/android?initiatePurchaseFlow=true&asin=B0H7SBR4MW';
     }
 
     promoImage.addEventListener('click', (e) => {
