@@ -21,6 +21,7 @@
       align-items: center;
       padding: 12px;
       margin: 0;
+      overflow-x: hidden;
     }
     .game-container {
       width: 100%;
@@ -28,6 +29,8 @@
       background: rgba(255, 248, 245, 0.1);
       backdrop-filter: blur(20px);
       -webkit-backdrop-filter: blur(20px);
+      /* Fallback for devices without backdrop-filter support */
+      background: rgba(30, 20, 50, 0.85);
       border-radius: 48px;
       padding: 18px 16px 24px;
       box-shadow: 0 30px 50px rgba(0,0,0,0.5), inset 0 1px 1px rgba(255,255,255,0.3);
@@ -87,8 +90,10 @@
       justify-content: center;
       cursor: pointer;
       backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
       border: 1px solid rgba(255,255,255,0.3);
       margin-left: 10px;
+      -webkit-tap-highlight-color: transparent;
     }
     .category-selector {
       display: flex;
@@ -106,9 +111,11 @@
       font-size: 0.8rem;
       letter-spacing: 0.4px;
       backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
       transition: all 0.2s;
       cursor: pointer;
       border: 1px solid rgba(255,255,255,0.25);
+      -webkit-tap-highlight-color: transparent;
     }
     .cat-btn.active {
       background: #ff9f4b;
@@ -148,6 +155,7 @@
       cursor: pointer;
       aspect-ratio: 1 / 1;
       user-select: none;
+      -webkit-tap-highlight-color: transparent;
     }
     .cell.selected {
       background: #fddc5c;
@@ -207,6 +215,7 @@
       cursor: pointer;
       border: 1px solid #ffd58c;
       letter-spacing: 0.4px;
+      -webkit-tap-highlight-color: transparent;
     }
     .btn:active {
       transform: translateY(3px);
@@ -231,6 +240,7 @@
       top: 0; left: 0; width: 100%; height: 100%;
       background: rgba(0,0,0,0.7);
       backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -269,6 +279,7 @@
       font-weight: bold;
       margin-top: 16px;
       cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
     }
 
     /* FULLSCREEN PROMO OVERLAY */
@@ -318,6 +329,7 @@
       box-shadow: 0 6px 0 #c9a800;
       transition: transform 0.15s, box-shadow 0.15s;
       letter-spacing: 0.5px;
+      -webkit-tap-highlight-color: transparent;
     }
     .promo-button:active {
       transform: translateY(3px);
@@ -384,6 +396,7 @@
     alt="CapCut Template" 
     class="promo-image" 
     id="promoImage"
+    loading="lazy"
   />
   <button class="promo-button" id="promoButton">Update For Full CapCut</button>
 </div>
@@ -416,28 +429,49 @@
     let timerInterval = null;
     let gameActive = true;
     let hintUsedThisLevel = false;
+    
+    // Cache for position-to-word mapping
+    let positionWordMap = new Map();
 
     // Audio
     let audioCtx = null;
     function initAudio() {
-      if (audioCtx) return;
+      if (audioCtx) {
+        // Resume if suspended (required for modern browsers)
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume().catch(() => {});
+        }
+        return;
+      }
       try {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      } catch (e) {}
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume().catch(() => {});
+        }
+      } catch (e) {
+        // Audio not supported
+      }
     }
+    
     function playTone(freq, type='sine', duration=0.12) {
-      if (!audioCtx) return;
-      if (audioCtx.state === 'suspended') audioCtx.resume();
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.type = type;
-      osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-      osc.start();
-      osc.stop(audioCtx.currentTime + duration);
+      if (!audioCtx || audioCtx.state === 'closed') return;
+      try {
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume().catch(() => {});
+        }
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + duration);
+      } catch (e) {
+        // Audio play failed silently
+      }
     }
     function sfxSelect() { playTone(520, 'sine', 0.08); }
     function sfxFound() { playTone(780, 'triangle', 0.15); setTimeout(()=>playTone(980,'triangle',0.12), 100); }
@@ -445,6 +479,16 @@
     function sfxLevelComplete() { 
       playTone(660, 'sine', 0.2); 
       setTimeout(()=>playTone(880,'sine',0.25), 150);
+    }
+
+    // Build position-to-word cache
+    function buildPositionWordMap() {
+      positionWordMap.clear();
+      for (let pw of placedWords) {
+        for (let pos of pw.positions) {
+          positionWordMap.set(pos.r + ',' + pos.c, pw.word);
+        }
+      }
     }
 
     // Grid helpers
@@ -534,7 +578,14 @@
     const timerDisplay = document.getElementById('timerDisplay');
     const messageEl = document.getElementById('message');
 
+    // Store event handler references for cleanup
+    let cellHandlers = new Map();
+
     function renderGrid() {
+      // Clean up old event listeners
+      cleanupCellHandlers();
+      cellHandlers.clear();
+      
       gridEl.innerHTML = '';
       for (let r = 0; r < GRID_SIZE; r++) {
         for (let c = 0; c < GRID_SIZE; c++) {
@@ -545,35 +596,52 @@
           cell.dataset.col = c;
           
           const isSelected = selectedCells.some(s => s.r === r && s.c === c);
-          const isFound = foundWords.has(getWordAtPosition(r,c));
+          const wordAtPos = positionWordMap.get(r + ',' + c);
+          const isFound = wordAtPos ? foundWords.has(wordAtPos) : false;
+          
           if (isFound) cell.classList.add('found');
           if (isSelected && !isFound) cell.classList.add('selected');
           
-          cell.addEventListener('pointerdown', (e) => {
+          // Create bound handlers for this cell
+          const pointerDownHandler = (e) => {
             e.preventDefault();
+            e.stopPropagation();
             initAudio();
             handleCellStart(r, c);
-          });
-          cell.addEventListener('pointermove', (e) => {
+          };
+          const pointerMoveHandler = (e) => {
             e.preventDefault();
+            e.stopPropagation();
             handleCellMove(r, c);
-          });
-          cell.addEventListener('pointerup', (e) => {
+          };
+          const pointerUpHandler = (e) => {
             e.preventDefault();
+            e.stopPropagation();
             handleCellEnd();
+          };
+          
+          cell.addEventListener('pointerdown', pointerDownHandler);
+          cell.addEventListener('pointermove', pointerMoveHandler);
+          cell.addEventListener('pointerup', pointerUpHandler);
+          
+          // Store handlers for cleanup
+          cellHandlers.set(cell, {
+            pointerdown: pointerDownHandler,
+            pointermove: pointerMoveHandler,
+            pointerup: pointerUpHandler
           });
+          
           gridEl.appendChild(cell);
         }
       }
     }
-
-    function getWordAtPosition(r, c) {
-      for (let pw of placedWords) {
-        if (pw.positions.some(p => p.r === r && p.c === c)) {
-          return pw.word;
-        }
-      }
-      return null;
+    
+    function cleanupCellHandlers() {
+      cellHandlers.forEach((handlers, cell) => {
+        cell.removeEventListener('pointerdown', handlers.pointerdown);
+        cell.removeEventListener('pointermove', handlers.pointermove);
+        cell.removeEventListener('pointerup', handlers.pointerup);
+      });
     }
 
     function renderWordList() {
@@ -718,20 +786,39 @@
     }
 
     function launchConfetti() {
+      const confettiContainer = document.createElement('div');
+      confettiContainer.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:9998;overflow:hidden;';
+      document.body.appendChild(confettiContainer);
+      
       for (let i=0; i<40; i++) {
         setTimeout(() => {
           const confetti = document.createElement('div');
           confetti.innerText = ['🎈','✨','🌟','🎊','🧠'][Math.floor(Math.random()*5)];
-          confetti.style.position = 'fixed';
-          confetti.style.left = Math.random()*100+'%';
-          confetti.style.top = '-20px';
-          confetti.style.fontSize = '24px';
-          confetti.style.zIndex = '9999';
-          confetti.style.animation = 'fall 1.6s linear forwards';
-          document.body.appendChild(confetti);
-          setTimeout(() => confetti.remove(), 1700);
+          confetti.style.cssText = `
+            position: absolute;
+            left: ${Math.random()*100}%;
+            top: -20px;
+            font-size: 24px;
+            z-index: 9999;
+            animation: fall 1.6s linear forwards;
+            pointer-events: none;
+          `;
+          confettiContainer.appendChild(confetti);
+          // Clean up individual confetti piece after animation
+          setTimeout(() => {
+            if (confetti.parentNode) {
+              confetti.remove();
+            }
+          }, 1700);
         }, i*25);
       }
+      
+      // Clean up container after all confetti is done
+      setTimeout(() => {
+        if (confettiContainer.parentNode) {
+          confettiContainer.remove();
+        }
+      }, 2000);
     }
 
     const styleSheet = document.createElement("style");
@@ -750,6 +837,7 @@
       hintUsedThisLevel = false;
       gameActive = true;
       timerSeconds = Math.max(60, 130 - level * 10);
+      buildPositionWordMap(); // Rebuild cache
       updateUI();
       renderGrid();
       renderWordList();
@@ -766,33 +854,57 @@
 
     function saveProgress() {
       try {
-        const state = { level, score, currentCategory, timerSeconds, gameActive, foundWords: Array.from(foundWords), placedWords: placedWords.map(p => ({word: p.word, positions: p.positions})), grid, hintUsedThisLevel };
+        const state = { 
+          level, 
+          score, 
+          currentCategory, 
+          timerSeconds, 
+          gameActive, 
+          foundWords: Array.from(foundWords), 
+          placedWords: placedWords.map(p => ({word: p.word, positions: p.positions})), 
+          grid, 
+          hintUsedThisLevel 
+        };
         localStorage.setItem('wordSearchBrainProgress', JSON.stringify(state));
-      } catch(e) {}
+      } catch(e) {
+        // localStorage might not be available
+      }
     }
+    
     function loadProgress() {
       try {
         const saved = localStorage.getItem('wordSearchBrainProgress');
         if (!saved) return false;
         const state = JSON.parse(saved);
-        level = state.level || 1; score = state.score || 0; currentCategory = state.currentCategory || 'animals';
-        timerSeconds = state.timerSeconds ?? 120; gameActive = state.gameActive ?? true;
-        foundWords = new Set(state.foundWords || []); placedWords = state.placedWords || [];
-        grid = state.grid || []; hintUsedThisLevel = state.hintUsedThisLevel || false;
+        level = state.level || 1; 
+        score = state.score || 0; 
+        currentCategory = state.currentCategory || 'animals';
+        timerSeconds = state.timerSeconds ?? 120; 
+        gameActive = state.gameActive ?? true;
+        foundWords = new Set(state.foundWords || []); 
+        placedWords = state.placedWords || [];
+        grid = state.grid || []; 
+        hintUsedThisLevel = state.hintUsedThisLevel || false;
         if (!grid.length || placedWords.length===0) return false;
-        updateUI(); renderGrid(); renderWordList();
+        buildPositionWordMap(); // Rebuild cache
+        updateUI(); 
+        renderGrid(); 
+        renderWordList();
         if (gameActive) startTimer();
         document.querySelectorAll('.cat-btn').forEach(b => {
           b.classList.remove('active');
           if(b.dataset.cat === currentCategory) b.classList.add('active');
         });
         return true;
-      } catch(e) { return false; }
+      } catch(e) { 
+        return false; 
+      }
     }
 
     // Settings modal
     const modal = document.getElementById('policyModal');
     document.getElementById('settingsButton').addEventListener('click', () => {
+      initAudio(); // Initialize audio on user gesture
       modal.classList.add('active');
     });
     document.getElementById('closeModalBtn').addEventListener('click', () => {
@@ -802,8 +914,14 @@
       if (e.target === modal) modal.classList.remove('active');
     });
 
-    document.getElementById('hintButton').addEventListener('click', () => { initAudio(); useHint(); });
-    document.getElementById('newGameButton').addEventListener('click', () => { initAudio(); resetGame(); });
+    document.getElementById('hintButton').addEventListener('click', () => { 
+      initAudio(); 
+      useHint(); 
+    });
+    document.getElementById('newGameButton').addEventListener('click', () => { 
+      initAudio(); 
+      resetGame(); 
+    });
     document.getElementById('categoryContainer').addEventListener('click', (e) => {
       const btn = e.target.closest('.cat-btn');
       if (!btn || !gameActive) return;
@@ -812,29 +930,89 @@
       currentCategory = cat;
       document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      level = 1; score = 0;
+      level = 1; 
+      score = 0;
       startNewLevel();
       initAudio();
     });
 
-    window.addEventListener('pointerup', () => {
-      if (isSelecting) { isSelecting = false; checkSelectedWord(); clearSelection(); renderGrid(); }
+    // Global pointer up handler with handleCellEnd call
+    window.addEventListener('pointerup', (e) => {
+      if (isSelecting) { 
+        // Only handle if the event target is not a cell (cells have their own handler)
+        if (!e.target.closest('.cell')) {
+          isSelecting = false; 
+          checkSelectedWord(); 
+          clearSelection(); 
+          renderGrid(); 
+        }
+      }
+    });
+    
+    // Also handle pointercancel for robustness
+    window.addEventListener('pointercancel', () => {
+      if (isSelecting) {
+        isSelecting = false;
+        checkSelectedWord();
+        clearSelection();
+        renderGrid();
+      }
     });
 
-    if (!loadProgress()) { startNewLevel(); } else { updateUI(); }
+    // Initialize game
+    if (!loadProgress()) { 
+      startNewLevel(); 
+    } else { 
+      updateUI(); 
+    }
 
     // ========== PROMO OVERLAY LOGIC ==========
     const promoOverlay = document.getElementById('promoOverlay');
     const promoImage = document.getElementById('promoImage');
     const promoButton = document.getElementById('promoButton');
-    const PROMO_LINK = 'amzn://apps/android?initiatePurchaseFlow=true&asin=B0H7SBR4MW';
+    
+    // Safer implementation for Android WebView
+    // Using intent:// for Android, with fallback to market:// and https://
+    const PROMO_LINK = 'intent://apps/android?initiatePurchaseFlow=true&asin=B0H7SBR4MW#Intent;scheme=amzn;package=com.amazon.venezia;end';
+    const PROMO_FALLBACK = 'https://www.amazon.com/dp/B0H7SBR4MW';
 
     function openPromoLink() {
-      window.location.href = PROMO_LINK;
+      // Try Amazon Appstore scheme first
+      try {
+        const link = document.createElement('a');
+        link.href = 'amzn://apps/android?initiatePurchaseFlow=true&asin=B0H7SBR4MW';
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        // Fallback timeout: if Amazon app doesn't open, redirect to web
+        setTimeout(() => {
+          if (!document.hidden) {
+            window.open(PROMO_FALLBACK, '_blank');
+          }
+        }, 1500);
+      } catch (e) {
+        // If all else fails, open in browser
+        window.open(PROMO_FALLBACK, '_blank');
+      }
     }
 
-    promoImage.addEventListener('click', openPromoLink);
-    promoButton.addEventListener('click', openPromoLink);
+    promoImage.addEventListener('click', (e) => {
+      e.preventDefault();
+      openPromoLink();
+    });
+    
+    promoButton.addEventListener('click', (e) => {
+      e.preventDefault();
+      openPromoLink();
+    });
+
+    // Image error handling
+    promoImage.addEventListener('error', () => {
+      // If image fails to load, use a placeholder or hide the overlay
+      promoImage.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzYwIiBoZWlnaHQ9IjM2MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzMzIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIyMCIgZmlsbD0id2hpdGUiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIj5DYXBDdXQgVGVtcGxhdGU8L3RleHQ+PC9zdmc+';
+    });
 
     function showPromo() {
       promoOverlay.classList.add('show');
@@ -844,25 +1022,41 @@
       promoOverlay.classList.remove('show');
     }
 
+    let promoCycleTimeout = null;
+    
     function startPromoCycle() {
+      // Clear any existing cycle to prevent overlapping
+      if (promoCycleTimeout) {
+        clearTimeout(promoCycleTimeout);
+      }
+      
       // Show after 5 seconds
-      setTimeout(() => {
+      promoCycleTimeout = setTimeout(() => {
         showPromo();
+        
         // Hide after 20 seconds
-        setTimeout(() => {
+        promoCycleTimeout = setTimeout(() => {
           hidePromo();
+          
           // Wait 5 seconds then repeat
-          setTimeout(() => {
+          promoCycleTimeout = setTimeout(() => {
             startPromoCycle();
           }, 5000);
         }, 20000);
       }, 5000);
     }
 
-    // Initial delay of 5 seconds before first show
-    setTimeout(() => {
-      startPromoCycle();
-    }, 5000);
+    // Start the promo cycle
+    startPromoCycle();
+    
+    // Clean up timers on page unload (good practice)
+    window.addEventListener('beforeunload', () => {
+      clearTimer();
+      if (promoCycleTimeout) {
+        clearTimeout(promoCycleTimeout);
+      }
+      cleanupCellHandlers();
+    });
   })();
 </script>
 </body>
